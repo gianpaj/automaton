@@ -191,8 +191,8 @@ export async function runAgentLoop(
       // Uses Ollama by default (free local inference) — no Conway credits burned.
       const workerPool = new GooseWorkerPool({
         db: db.raw,
-        provider: config.workerProvider ?? "ollama",
-        model: config.workerModel ?? "qwen3.5:4b",
+        provider: config.workerProvider,
+        model: config.workerModel,
         workerId: `pool-${identity.name}`,
       });
 

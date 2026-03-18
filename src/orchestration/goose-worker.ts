@@ -20,8 +20,10 @@ const DEFAULT_TIMEOUT_MS = 5 * 60_000;
 
 interface GooseWorkerConfig {
   db: Database;
-  provider: string;
-  model: string;
+  /** Override Goose's configured provider. Omit to use whatever `goose configure` set. */
+  provider?: string;
+  /** Override Goose's configured model. Omit to use whatever `goose configure` set. */
+  model?: string;
   workerId: string;
 }
 
@@ -49,7 +51,10 @@ export class GooseWorkerPool {
         );
       } else {
         this.gooseAvailable = true;
-        logger.info(`[GOOSE-WORKER] Goose available. provider=${this.config.provider} model=${this.config.model}`);
+        const providerInfo = this.config.provider
+          ? `provider=${this.config.provider} model=${this.config.model}`
+          : "provider=<goose default>";
+        logger.info(`[GOOSE-WORKER] Goose available. ${providerInfo}`);
       }
     });
   }
@@ -112,18 +117,14 @@ export class GooseWorkerPool {
     const prompt = this.buildTaskPrompt(task);
     const startedAt = Date.now();
 
-    logger.info(
-      `[GOOSE-WORKER ${workerId}] Starting — provider=${this.config.provider} model=${this.config.model} timeout=${timeoutMs}ms`
-    );
+    const providerInfo = this.config.provider
+      ? `provider=${this.config.provider} model=${this.config.model}`
+      : "provider=<goose default>";
+    logger.info(`[GOOSE-WORKER ${workerId}] Starting — ${providerInfo} timeout=${timeoutMs}ms`);
 
-    const args = [
-      "run",
-      "--no-session",
-      "--provider", this.config.provider,
-      "--model", this.config.model,
-      "--output-format", "json",
-      "-t", prompt,
-    ];
+    const args = ["run", "--no-session", "--output-format", "json", "-t", prompt];
+    if (this.config.provider) args.splice(2, 0, "--provider", this.config.provider);
+    if (this.config.model) args.splice(args.indexOf("--output-format"), 0, "--model", this.config.model);
 
     await new Promise<void>((resolve, reject) => {
       const proc = spawn("goose", args, {

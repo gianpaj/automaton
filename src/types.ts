@@ -94,8 +94,8 @@ export const DEFAULT_CONFIG: Partial<AutomatonConfig> = {
   maxTurnsPerCycle: 25,
   childSandboxMemoryMb: 1024,
   socialRelayUrl: "https://social.conway.tech",
-  workerProvider: "ollama",
-  workerModel: "qwen3.5:4b",
+  // workerProvider and workerModel intentionally omitted — Goose uses its own
+  // configured default (set via `goose configure`). Override in config.json if needed.
 };
 
 // ─── Agent State ─────────────────────────────────────────────────
