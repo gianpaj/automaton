@@ -577,6 +577,18 @@ export async function runAgentLoop(
             `[ORCHESTRATOR] phase=${orchestratorTick.phase} assigned=${orchestratorTick.tasksAssigned} completed=${orchestratorTick.tasksCompleted} failed=${orchestratorTick.tasksFailed}`,
           );
         }
+
+        // If the orchestrator is actively executing a goal, skip the LLM turn
+        // entirely — there is nothing for the parent agent to decide right now.
+        // This avoids burning credits on turns that always end in create_goal BLOCKED.
+        if (orchestratorTick.phase === "executing" && orchestratorTick.goalsActive > 0) {
+          log(config, `[LOOP] Orchestrator executing (${orchestratorTick.goalsActive} active goal(s)) — skipping LLM turn, sleeping 60s.`);
+          db.setKV("sleep_until", new Date(Date.now() + 60_000).toISOString());
+          db.setAgentState("sleeping");
+          onStateChange?.("sleeping");
+          running = false;
+          break;
+        }
       }
 
       if (planModeController) {
