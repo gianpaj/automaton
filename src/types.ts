@@ -75,6 +75,10 @@ export interface AutomatonConfig {
   rpcUrl?: string;
   /** Chain type for this automaton. Defaults to "evm" if absent. */
   chainType?: ChainType;
+  /** LLM provider for worker agents (e.g. "ollama", "anthropic", "openai"). */
+  workerProvider?: string;
+  /** Model for worker agents (e.g. "qwen3.5:4b", "claude-sonnet-4-6"). */
+  workerModel?: string;
 }
 
 export const DEFAULT_CONFIG: Partial<AutomatonConfig> = {
@@ -90,6 +94,8 @@ export const DEFAULT_CONFIG: Partial<AutomatonConfig> = {
   maxTurnsPerCycle: 25,
   childSandboxMemoryMb: 1024,
   socialRelayUrl: "https://social.conway.tech",
+  workerProvider: "ollama",
+  workerModel: "qwen3.5:4b",
 };
 
 // ─── Agent State ─────────────────────────────────────────────────

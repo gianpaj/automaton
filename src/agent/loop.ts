@@ -58,7 +58,7 @@ import { Orchestrator } from "../orchestration/orchestrator.js";
 import { PlanModeController } from "../orchestration/plan-mode.js";
 import { generateTodoMd, injectTodoContext } from "../orchestration/attention.js";
 import { ColonyMessaging, LocalDBTransport } from "../orchestration/messaging.js";
-import { LocalWorkerPool } from "../orchestration/local-worker.js";
+import { GooseWorkerPool } from "../orchestration/goose-worker.js";
 import { SimpleAgentTracker, SimpleFundingProtocol } from "../orchestration/simple-tracker.js";
 import { ContextManager, createTokenCounter } from "../memory/context-manager.js";
 import { CompressionEngine } from "../memory/compression-engine.js";
@@ -187,33 +187,12 @@ export async function runAgentLoop(
         unifiedInference,
       );
 
-      // Adapter: wrap the main agent's working inference client so local
-      // workers can use it. The main InferenceClient talks to Conway Compute
-      // (which always works), unlike the UnifiedInferenceClient which needs
-      // a direct OpenAI key.
-      const workerInference = {
-        chat: async (params: { messages: any[]; tools?: any[]; maxTokens?: number; temperature?: number }) => {
-          const response = await inference.chat(
-            params.messages,
-            {
-              tools: params.tools,
-              maxTokens: params.maxTokens,
-              temperature: params.temperature,
-            },
-          );
-          return {
-            content: response.message?.content ?? "",
-            toolCalls: response.toolCalls,
-          };
-        },
-      };
-
-      // Local worker pool: runs inference-driven agents in-process
-      // as async tasks. Falls back from Conway sandbox spawning.
-      const workerPool = new LocalWorkerPool({
+      // Goose worker pool: spawns Goose subprocesses for task execution.
+      // Uses Ollama by default (free local inference) — no Conway credits burned.
+      const workerPool = new GooseWorkerPool({
         db: db.raw,
-        inference: workerInference,
-        conway,
+        provider: config.workerProvider ?? "ollama",
+        model: config.workerModel ?? "qwen3.5:4b",
         workerId: `pool-${identity.name}`,
       });
 
