@@ -217,7 +217,23 @@ export async function runAgentLoop(
         config: {
           ...config,
           spawnAgent: async (task: any) => {
-            // Try Conway sandbox spawn first (production)
+            // Prefer Goose local workers when available — they're free and don't
+            // burn Conway credits. Only fall back to Conway sandbox spawning when
+            // Goose is explicitly disabled via config.
+            if (config.disableGooseWorkers !== true) {
+              try {
+                const spawned = workerPool.spawn(task);
+                logger.info("Spawned Goose worker", { taskId: task.id, address: spawned.address });
+                return spawned;
+              } catch (gooseError) {
+                logger.warn("Goose spawn failed, falling back to Conway sandbox", {
+                  taskId: task.id,
+                  error: gooseError instanceof Error ? gooseError.message : String(gooseError),
+                });
+              }
+            }
+
+            // Try Conway sandbox spawn (production — costs credits)
             try {
               const { generateGenesisConfig } = await import("../replication/genesis.js");
               const { spawnChild } = await import("../replication/spawn.js");
@@ -297,22 +313,11 @@ export async function runAgentLoop(
                 }
               }
 
-              // Conway sandbox unavailable — fall back to local worker
-              logger.info("Conway sandbox unavailable, spawning local worker", {
+              logger.warn("Conway sandbox spawn failed, no further fallback available", {
                 taskId: task.id,
                 error: sandboxError instanceof Error ? sandboxError.message : String(sandboxError),
               });
-
-              try {
-                const spawned = workerPool.spawn(task);
-                return spawned;
-              } catch (localError) {
-                logger.warn("Failed to spawn local worker", {
-                  taskId: task.id,
-                  error: localError instanceof Error ? localError.message : String(localError),
-                });
-                return null;
-              }
+              return null;
             }
           },
         },

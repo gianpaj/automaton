@@ -79,6 +79,8 @@ export interface AutomatonConfig {
   workerProvider?: string;
   /** Model for worker agents (e.g. "qwen3.5:4b", "claude-sonnet-4-6"). */
   workerModel?: string;
+  /** Set true to skip Goose workers and use Conway sandbox spawning exclusively. */
+  disableGooseWorkers?: boolean;
 }
 
 export const DEFAULT_CONFIG: Partial<AutomatonConfig> = {
