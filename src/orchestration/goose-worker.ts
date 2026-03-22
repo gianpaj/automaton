@@ -146,7 +146,14 @@ export class GooseWorkerPool {
       : "provider=<goose default>";
     logger.info(`[GOOSE-WORKER ${workerId}] Starting — ${providerInfo} timeout=${timeoutMs}ms`);
 
-    const args = ["run", "--no-session", "--no-profile", "--output-format", "json"];
+    // --no-profile: skip user's goose profile (extensions, settings)
+    // --with-builtin developer: re-enable the developer toolbox explicitly
+    //   (file write, shell exec, etc.) — needed for tasks to actually act.
+    const args = [
+      "run", "--no-session", "--no-profile",
+      "--with-builtin", "developer",
+      "--output-format", "json",
+    ];
     if (this.config.provider) args.push("--provider", this.config.provider);
     if (this.config.model) args.push("--model", this.config.model);
     args.push("-t", prompt);
@@ -355,19 +362,22 @@ export class GooseWorkerPool {
   }
 
   private buildTaskPrompt(task: TaskNode): string {
-    const lines = [
+    const deps = task.dependencies && task.dependencies.length > 0
+      ? `\nDependencies (completed): ${task.dependencies.join(", ")}`
+      : "";
+
+    return [
       `Task: ${task.title}`,
       `Description: ${task.description}`,
       `Role: ${task.agentRole ?? "generalist"}`,
       `Task ID: ${task.id}`,
+      deps,
       "",
-      "Complete this task. Write files, run commands, and provide a final summary.",
-    ];
-
-    if (task.dependencies && task.dependencies.length > 0) {
-      lines.splice(4, 0, `Dependencies (completed): ${task.dependencies.join(", ")}`);
-    }
-
-    return lines.join("\n");
+      "INSTRUCTIONS:",
+      "- You MUST actually execute this task using your tools (shell commands, file writes, etc.).",
+      "- Do NOT just describe what you would do — actually do it.",
+      "- Write files to disk, run shell commands, verify the results.",
+      "- Provide a concise final summary of what was accomplished.",
+    ].filter(Boolean).join("\n");
   }
 }
