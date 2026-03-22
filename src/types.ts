@@ -79,6 +79,8 @@ export interface AutomatonConfig {
   workerProvider?: string;
   /** Model for worker agents (e.g. "qwen3.5:4b", "claude-sonnet-4-6"). */
   workerModel?: string;
+  /** Max concurrent Goose worker subprocesses. Defaults to 2 (Ollama serialises anyway). */
+  maxWorkers?: number;
   /** Set true to skip Goose workers and use Conway sandbox spawning exclusively. */
   disableGooseWorkers?: boolean;
 }

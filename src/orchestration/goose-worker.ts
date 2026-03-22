@@ -26,6 +26,12 @@ interface GooseWorkerConfig {
   /** Override Goose's configured model. Omit to use whatever `goose configure` set. */
   model?: string;
   workerId: string;
+  /**
+   * Maximum number of concurrent Goose workers. Defaults to 2.
+   * With Ollama, requests are serialised by the server anyway, so more than
+   * 2-3 concurrent workers only adds process overhead without throughput gain.
+   */
+  maxWorkers?: number;
 }
 
 interface ActiveWorker {
@@ -84,6 +90,14 @@ export class GooseWorkerPool {
   }
 
   spawn(task: TaskNode): { address: string; name: string; sandboxId: string } {
+    const maxWorkers = this.config.maxWorkers ?? 2;
+    if (this.activeWorkers.size >= maxWorkers) {
+      throw new Error(
+        `GooseWorkerPool at capacity (${this.activeWorkers.size}/${maxWorkers} workers). ` +
+        "Task will be retried when a worker slot is free.",
+      );
+    }
+
     const workerId = `goose-worker-${ulid()}`;
     const workerName = `goose-${task.agentRole ?? "generalist"}-${workerId.slice(-6)}`;
     const address = `local://${workerId}`;

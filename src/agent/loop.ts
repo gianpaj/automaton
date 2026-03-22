@@ -194,6 +194,7 @@ export async function runAgentLoop(
         provider: config.workerProvider,
         model: config.workerModel,
         workerId: `pool-${identity.name}`,
+        maxWorkers: config.maxWorkers,
       });
 
       orchestrator = new Orchestrator({
