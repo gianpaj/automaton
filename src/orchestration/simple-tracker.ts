@@ -33,7 +33,14 @@ export class SimpleAgentTracker implements AgentTracker {
     ).all() as { id: string; name: string; address: string; status: string; role: string }[];
 
     return children
-      .filter((child) => IDLE_STATUSES.has(child.status as ChildStatus) && !assignedAddresses.has(child.address))
+      .filter((child) =>
+        IDLE_STATUSES.has(child.status as ChildStatus) &&
+        !assignedAddresses.has(child.address) &&
+        // Local worker addresses (local://) are ephemeral — only alive within the
+        // current process. They are managed by GooseWorkerPool, not the children table.
+        // Exclude them so stale entries don't cause infinite re-assignment loops.
+        !child.address?.startsWith("local://"),
+      )
       .map((child) => ({
         address: child.address,
         name: child.name,

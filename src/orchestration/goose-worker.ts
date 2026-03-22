@@ -38,7 +38,30 @@ export class GooseWorkerPool {
   private gooseAvailable: boolean | null = null;
 
   constructor(private readonly config: GooseWorkerConfig) {
+    this.markStaleLocalChildrenDead();
     this.checkGooseAvailability();
+  }
+
+  /**
+   * On startup, mark any local:// children in the DB as 'dead'.
+   * Local workers are ephemeral — they only live within the current process.
+   * Stale entries left from a previous run would otherwise be treated as idle
+   * workers by SimpleAgentTracker, causing infinite re-assignment loops.
+   */
+  private markStaleLocalChildrenDead(): void {
+    try {
+      const result = this.config.db.prepare(
+        `UPDATE children SET status = 'dead'
+         WHERE address LIKE 'local://%' AND status IN ('running', 'healthy')`,
+      ).run();
+      if (result.changes > 0) {
+        logger.info(`[GOOSE-WORKER] Cleaned up ${result.changes} stale local worker(s) from previous run`);
+      }
+    } catch (err) {
+      logger.warn("[GOOSE-WORKER] Failed to clean up stale local workers", {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
   }
 
   private checkGooseAvailability(): void {
@@ -122,9 +145,10 @@ export class GooseWorkerPool {
       : "provider=<goose default>";
     logger.info(`[GOOSE-WORKER ${workerId}] Starting — ${providerInfo} timeout=${timeoutMs}ms`);
 
-    const args = ["run", "--no-session", "--output-format", "json", "-t", prompt];
-    if (this.config.provider) args.splice(2, 0, "--provider", this.config.provider);
-    if (this.config.model) args.splice(args.indexOf("--output-format"), 0, "--model", this.config.model);
+    const args = ["run", "--no-session", "--no-profile", "--output-format", "json"];
+    if (this.config.provider) args.push("--provider", this.config.provider);
+    if (this.config.model) args.push("--model", this.config.model);
+    args.push("-t", prompt);
 
     await new Promise<void>((resolve, reject) => {
       const proc = spawn("goose", args, {
@@ -235,36 +259,64 @@ export class GooseWorkerPool {
   }
 
   private parseGooseOutput(stdout: string, workerId: string): string {
-    // Goose --output-format json produces: { "messages": [...], "metadata": {...} }
-    // Each message has { role: "assistant"|"user"|"tool", content: string|[...] }
-    // Older builds or plain text mode fall back to raw stdout.
+    // Goose --output-format json produces:
+    //   <optional banner lines>
+    //   { "messages": [...], "metadata": {...} }
+    //
+    // The banner (lines starting with __, \, or "L L") precedes the JSON.
+    // We scan forward to find the opening brace, then balance braces to extract
+    // the complete JSON object.
     const raw = stdout.trim();
     if (!raw) return "Task completed (no output).";
 
-    try {
-      const obj = JSON.parse(raw);
+    const lines = raw.split("\n");
+    let jsonStart = -1;
+    let braceDepth = 0;
 
-      // Primary format: { messages: [...] } (block/goose --output-format json)
-      if (obj && Array.isArray(obj.messages)) {
-        return this.extractLastAssistantText(obj.messages, workerId);
+    for (let i = 0; i < lines.length; i++) {
+      const trimmed = lines[i].trim();
+      if (jsonStart === -1 && trimmed.startsWith("{")) {
+        jsonStart = i;
       }
+      if (jsonStart !== -1) {
+        braceDepth += (trimmed.match(/\{/g) ?? []).length;
+        braceDepth -= (trimmed.match(/\}/g) ?? []).length;
+        if (braceDepth <= 0) {
+          const jsonStr = lines.slice(jsonStart, i + 1).join("\n");
+          try {
+            const obj = JSON.parse(jsonStr) as { messages?: unknown[]; role?: string; content?: unknown };
 
-      // Fallback: bare array of messages
-      if (Array.isArray(obj)) {
-        return this.extractLastAssistantText(obj, workerId);
+            if (obj && Array.isArray(obj.messages)) {
+              return this.extractLastAssistantText(obj.messages, workerId);
+            }
+            if (obj?.role === "assistant") {
+              return this.messageContentToText(obj.content);
+            }
+          } catch { /* malformed — fall through */ }
+          break;
+        }
       }
-
-      // Fallback: single message object
-      if (obj?.role === "assistant") {
-        return this.messageContentToText(obj.content);
-      }
-    } catch {
-      // Not JSON — Goose may have run without --output-format json (older version
-      // or flag not yet released). Use raw stdout as the result.
-      logger.info(`[GOOSE-WORKER ${workerId}] Output is plain text (not JSON), using as-is`);
     }
 
-    return raw;
+    // Bare JSON array fallback
+    for (let i = 0; i < lines.length; i++) {
+      const trimmed = lines[i].trim();
+      if (trimmed.startsWith("[")) {
+        try {
+          const arr = JSON.parse(trimmed);
+          if (Array.isArray(arr)) {
+            return this.extractLastAssistantText(arr, workerId);
+          }
+        } catch { /* skip */ }
+      }
+    }
+
+    // Last resort: return the last non-empty, non-banner line from stdout
+    logger.info(`[GOOSE-WORKER ${workerId}] Could not parse JSON, falling back to plain text`);
+    const nonEmpty = lines
+      .map((l) => l.trim())
+      .filter((l) => l.length > 0 && !l.startsWith("__") && !l.startsWith("\\") && !l.startsWith("L L"));
+    return nonEmpty.at(-1) ?? raw;
   }
 
   /** Extract the text of the last assistant message from a messages array. */
