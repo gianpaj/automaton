@@ -228,7 +228,7 @@ describe("GooseWorkerPool", () => {
       spawnMock.mockReturnValue(makeProc({ delayMs: 50 }));
       const { GooseWorkerPool } = await import("../../orchestration/goose-worker.js");
 
-      const pool = new GooseWorkerPool({ db, provider: "ollama", model: "qwen3.5:4b", workerId: "pool-test" });
+      const pool = new GooseWorkerPool({ db, provider: "ollama", model: "qwen3.5:4b", workerId: "pool-test", maxWorkers: 3 });
       pool.spawn(makeTask({ id: "t1" }));
       pool.spawn(makeTask({ id: "t2" }));
       pool.spawn(makeTask({ id: "t3" }));
