@@ -869,9 +869,12 @@ export class Orchestrator {
     const idleAddresses = new Set(this.params.agentTracker.getIdle().map((agent) => agent.address));
 
     const rows = this.params.db.prepare(
+      // Exclude local:// workers — they are ephemeral subprocess workers that handle
+      // one task at a time. Only remote (Conway sandbox) children qualify for reassign.
       `SELECT name, address, status
        FROM children
        WHERE status IN ('running', 'healthy')
+         AND address NOT LIKE 'local://%'
        ORDER BY created_at ASC`,
     ).all() as { name: string; address: string; status: string }[];
 
