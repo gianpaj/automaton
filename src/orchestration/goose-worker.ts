@@ -11,6 +11,7 @@ import { spawn, exec as execCb } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
 import { createLogger } from "../observability/logger.js";
 import { completeTask, failTask } from "./task-graph.js";
+import { insertWakeEvent } from "../state/database.js";
 import type { TaskNode, TaskResult } from "./task-graph.js";
 import type { Database } from "better-sqlite3";
 
@@ -239,6 +240,7 @@ export class GooseWorkerPool {
 
           try {
             completeTask(this.config.db, task.id, result);
+            insertWakeEvent(this.config.db, "goose-worker", `Task completed: ${task.title}`);
           } catch (err) {
             logger.warn(`[GOOSE-WORKER ${workerId}] Failed to mark task complete`, {
               error: err instanceof Error ? err.message : String(err),
@@ -251,6 +253,7 @@ export class GooseWorkerPool {
           logger.warn(`[GOOSE-WORKER ${workerId}] Failed: ${errorMsg}`);
           try {
             failTask(this.config.db, task.id, errorMsg, true);
+            insertWakeEvent(this.config.db, "goose-worker", `Task failed: ${task.title}`);
           } catch { /* already in terminal state */ }
           reject(new Error(errorMsg));
         }
