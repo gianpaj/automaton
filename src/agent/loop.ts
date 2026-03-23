@@ -60,6 +60,7 @@ import { generateTodoMd, injectTodoContext } from "../orchestration/attention.js
 import { ColonyMessaging, LocalDBTransport } from "../orchestration/messaging.js";
 import { PiWorkerPool } from "../orchestration/pi-worker.js";
 import { GooseWorkerPool } from "../orchestration/goose-worker.js";
+import { detectBestOllamaModel } from "../orchestration/ollama-detect.js";
 import { SimpleAgentTracker, SimpleFundingProtocol } from "../orchestration/simple-tracker.js";
 import { ContextManager, createTokenCounter } from "../memory/context-manager.js";
 import { CompressionEngine } from "../memory/compression-engine.js";
@@ -188,18 +189,31 @@ export async function runAgentLoop(
         unifiedInference,
       );
 
+      // Auto-detect the best available Ollama model when using Ollama and no model
+      // is explicitly configured. Prefers tool-capable models (qwen2.5:7b+) over
+      // ones that describe tool calls in text (llama3.2:3b).
+      let resolvedWorkerModel = config.workerModel;
+      const isOllamaProvider = !config.workerProvider || config.workerProvider === "ollama";
+      if (isOllamaProvider && !config.workerModel) {
+        const detected = await detectBestOllamaModel(config.ollamaBaseUrl);
+        if (detected) {
+          resolvedWorkerModel = detected;
+          logger.info(`[loop] Auto-selected Ollama worker model: ${detected}`);
+        }
+      }
+
       // Worker pools: try Pi first (cloud LLMs), then Goose (supports Ollama, free local).
       // Both are initialised here; spawnAgent() decides priority at task dispatch time.
       const piWorkerPool = new PiWorkerPool({
         db: db.raw,
         provider: config.workerProvider,
-        model: config.workerModel,
+        model: resolvedWorkerModel,
         workerId: `pi-pool-${identity.name}`,
       });
       const gooseWorkerPool = new GooseWorkerPool({
         db: db.raw,
         provider: config.workerProvider,
-        model: config.workerModel,
+        model: resolvedWorkerModel,
         workerId: `goose-pool-${identity.name}`,
         maxWorkers: config.maxWorkers,
       });
