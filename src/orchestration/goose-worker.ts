@@ -17,6 +17,45 @@ import { SubprocessWorkerPool } from "./subprocess-worker.js";
 import type { SubprocessWorkerConfig } from "./subprocess-worker.js";
 import type { TaskNode } from "./task-graph.js";
 
+/** Phrases that indicate the model described steps rather than executing them. */
+const HOLLOW_PHRASES = [
+  /\bi would\b/i,
+  /\byou (should|can|need to|could)\b/i,
+  /\bto (accomplish|complete|do) this\b/i,
+  /\bhere('s| is) how\b/i,
+  /\bfollow(ing)? these steps\b/i,
+  /\bthe (following|next) steps?\b/i,
+  /\bwould (need to|have to|be)\b/i,
+  /\bcan be (done|accomplished|achieved)\b/i,
+];
+
+/**
+ * Return true if the message list has at least one tool response —
+ * meaning the LLM actually called a tool and got a result back.
+ */
+function hasToolResponses(messages: unknown[]): boolean {
+  return messages.some((m) => {
+    const msg = m as { role?: string; content?: unknown };
+    if (Array.isArray(msg?.content)) {
+      return (msg.content as unknown[]).some(
+        (block) => (block as any)?.type === "toolResponse",
+      );
+    }
+    return false;
+  });
+}
+
+/**
+ * Return true if the output text looks like a hollow description:
+ * contains code blocks but uses hollow phrases suggesting the model
+ * explained what to do rather than doing it.
+ */
+function looksHollow(output: string): boolean {
+  const hasCodeBlock = /```/.test(output);
+  if (!hasCodeBlock) return false;  // Code blocks without hollow phrases are fine
+  return HOLLOW_PHRASES.some((re) => re.test(output));
+}
+
 export interface GooseWorkerConfig extends SubprocessWorkerConfig {
   /** LLM provider (e.g. "ollama", "anthropic", "openai"). Omit to use GOOSE_PROVIDER env. */
   provider?: string;
@@ -25,6 +64,13 @@ export interface GooseWorkerConfig extends SubprocessWorkerConfig {
 }
 
 export class GooseWorkerPool extends SubprocessWorkerPool {
+  /**
+   * Messages extracted from the last parseOutput call.
+   * Used by validateCompletion to check for actual tool executions.
+   * Keyed by workerId so concurrent workers don't interfere.
+   */
+  private lastMessages = new Map<string, unknown[]>();
+
   constructor(private readonly gooseConfig: GooseWorkerConfig) {
     super(gooseConfig);
     this.markStaleLocalChildrenDead();
@@ -107,6 +153,7 @@ export class GooseWorkerPool extends SubprocessWorkerPool {
    * Parse Goose `--output-format json` output.
    * Goose prints a terminal banner before the JSON, so we skip lines until
    * we find the opening brace, then brace-balance to extract the full JSON object.
+   * Saves the parsed messages list for use by validateCompletion().
    */
   protected parseOutput(stdout: string, workerId: string): string {
     const raw = stdout.trim();
@@ -129,6 +176,7 @@ export class GooseWorkerPool extends SubprocessWorkerPool {
           try {
             const data = JSON.parse(jsonStr) as { messages?: unknown[]; role?: string; content?: unknown };
             if (Array.isArray(data?.messages)) {
+              this.lastMessages.set(workerId, data.messages);
               return this.extractLastAssistantText(data.messages, workerId);
             }
             if (data?.role === "assistant") {
@@ -147,6 +195,7 @@ export class GooseWorkerPool extends SubprocessWorkerPool {
         try {
           const arr = JSON.parse(trimmed);
           if (Array.isArray(arr)) {
+            this.lastMessages.set(workerId, arr);
             return this.extractLastAssistantText(arr, workerId);
           }
         } catch { /* skip */ }
@@ -159,5 +208,32 @@ export class GooseWorkerPool extends SubprocessWorkerPool {
       .map((l) => l.trim())
       .filter((l) => l.length > 0 && !l.startsWith("__") && !l.startsWith("\\") && !l.startsWith("L L"));
     return nonEmpty.at(-1) ?? raw;
+  }
+
+  /**
+   * Detect hollow completions — the model exited 0 but only described steps
+   * without actually executing any tools (typical with llama3.2:3b).
+   *
+   * A completion is hollow when ALL of these are true:
+   *   1. No toolResponse messages in the conversation (no tools were called)
+   *   2. The output text contains code blocks (looks like instructions)
+   *   3. The output contains hollow phrases ("I would", "you should", etc.)
+   */
+  protected override validateCompletion(_stdout: string, output: string, workerId: string): string | null {
+    const messages = this.lastMessages.get(workerId) ?? [];
+    this.lastMessages.delete(workerId);  // Clean up
+
+    if (messages.length === 0) return null;  // No messages to check (plain text output)
+
+    if (hasToolResponses(messages)) return null;  // Tools were actually called — genuine completion
+
+    if (looksHollow(output)) {
+      return (
+        "Worker described the task without executing it — no tool calls were made. " +
+        "The model may lack tool-use capability. Consider using qwen2.5:7b or a cloud provider."
+      );
+    }
+
+    return null;
   }
 }

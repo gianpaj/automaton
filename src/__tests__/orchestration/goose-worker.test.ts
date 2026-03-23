@@ -447,6 +447,77 @@ describe("GooseWorkerPool", () => {
 
   // ── shutdown() ────────────────────────────────────────────────────────────
 
+  describe("hollow-completion detection", () => {
+    function makeGooseJson(messages: unknown[]): string {
+      const banner = "__( O)>\n\\____)\nL L\n";
+      return banner + JSON.stringify({ messages, metadata: { status: "completed" } });
+    }
+
+    function makeToolResponse(): unknown {
+      return {
+        role: "user",
+        content: [{ type: "toolResponse", id: "call_1", toolResult: { status: "success", value: {} } }],
+      };
+    }
+
+    function makeAssistantText(text: string): unknown {
+      return { role: "assistant", content: [{ type: "text", text }] };
+    }
+
+    it("marks task complete when tools were called (not hollow)", async () => {
+      const messages = [
+        makeAssistantText("I'll write the file now."),
+        makeToolResponse(),
+        makeAssistantText("Done! I wrote the file successfully."),
+      ];
+      const stdout = makeGooseJson(messages);
+      spawnMock.mockReturnValueOnce(makeProc({ stdout }));
+      const { GooseWorkerPool } = await import("../../orchestration/goose-worker.js");
+      const pool = new GooseWorkerPool({ db, provider: "ollama", model: "qwen2.5:7b", workerId: "pool-test" });
+
+      pool.spawn(makeTask());
+      await new Promise((r) => setTimeout(r, 50));
+
+      expect(completeTask).toHaveBeenCalled();
+      expect(failTask).not.toHaveBeenCalled();
+    });
+
+    it("fails task when no tools were called and output looks hollow", async () => {
+      const hollowText = "I would write this file. You should follow these steps:\n```bash\necho hello > file.txt\n```";
+      const messages = [makeAssistantText(hollowText)];
+      const stdout = makeGooseJson(messages);
+      spawnMock.mockReturnValueOnce(makeProc({ stdout }));
+      const { GooseWorkerPool } = await import("../../orchestration/goose-worker.js");
+      const pool = new GooseWorkerPool({ db, provider: "ollama", model: "llama3.2:3b", workerId: "pool-test" });
+
+      pool.spawn(makeTask());
+      await new Promise((r) => setTimeout(r, 50));
+
+      expect(failTask).toHaveBeenCalledWith(
+        db,
+        "task-01",
+        expect.stringContaining("described the task without executing it"),
+        true,
+      );
+      expect(completeTask).not.toHaveBeenCalled();
+    });
+
+    it("marks complete when no tools called but output has no hollow phrases", async () => {
+      // Model gave a genuine text summary with no code blocks → not hollow
+      const messages = [makeAssistantText("The task is complete. All configuration was verified.")];
+      const stdout = makeGooseJson(messages);
+      spawnMock.mockReturnValueOnce(makeProc({ stdout }));
+      const { GooseWorkerPool } = await import("../../orchestration/goose-worker.js");
+      const pool = new GooseWorkerPool({ db, provider: "ollama", model: "qwen2.5:7b", workerId: "pool-test" });
+
+      pool.spawn(makeTask());
+      await new Promise((r) => setTimeout(r, 50));
+
+      expect(completeTask).toHaveBeenCalled();
+      expect(failTask).not.toHaveBeenCalled();
+    });
+  });
+
   describe("shutdown()", () => {
     it("kills all active workers and clears the map", async () => {
       const proc1 = makeProc({ delayMs: 60_000 });

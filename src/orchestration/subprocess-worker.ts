@@ -69,6 +69,19 @@ export abstract class SubprocessWorkerPool {
   protected abstract parseOutput(stdout: string, workerId: string): string;
 
   /**
+   * Optional post-parse validation hook. If overridden and returns a non-null
+   * string, the task is treated as failed with that string as the error message,
+   * even though the process exited 0. Use this to detect hollow completions
+   * where the model described steps without executing them.
+   *
+   * @param stdout  The raw subprocess stdout
+   * @param output  The extracted result text from parseOutput()
+   */
+  protected validateCompletion(_stdout: string, _output: string, _workerId: string): string | null {
+    return null;
+  }
+
+  /**
    * Check that the required binary exists and emit an appropriate warning if not.
    * Called once at construction time (fire-and-forget).
    */
@@ -197,6 +210,19 @@ export abstract class SubprocessWorkerPool {
         if (code === 0) {
           const output = this.parseOutput(stdout, workerId);
           this.logger.info(`[${this.logTag} ${workerId}] Completed in ${duration}ms — ${output.slice(0, 200)}`);
+
+          // Hollow-completion check: subclass may detect that the model only
+          // described what it would do without actually executing any tools.
+          const hollowError = this.validateCompletion(stdout, output, workerId);
+          if (hollowError) {
+            this.logger.warn(`[${this.logTag} ${workerId}] Hollow completion detected: ${hollowError}`);
+            try {
+              failTask(this.config.db, task.id, hollowError, true);
+              insertWakeEvent(this.config.db, this.logTag.toLowerCase(), `Task hollow: ${task.title}`);
+            } catch { /* terminal */ }
+            reject(new Error(hollowError));
+            return;
+          }
 
           const result: TaskResult = { success: true, output, artifacts: [], costCents: 0, duration };
           try {
