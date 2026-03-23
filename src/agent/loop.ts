@@ -58,6 +58,7 @@ import { Orchestrator } from "../orchestration/orchestrator.js";
 import { PlanModeController } from "../orchestration/plan-mode.js";
 import { generateTodoMd, injectTodoContext } from "../orchestration/attention.js";
 import { ColonyMessaging, LocalDBTransport } from "../orchestration/messaging.js";
+import { PiWorkerPool } from "../orchestration/pi-worker.js";
 import { GooseWorkerPool } from "../orchestration/goose-worker.js";
 import { SimpleAgentTracker, SimpleFundingProtocol } from "../orchestration/simple-tracker.js";
 import { ContextManager, createTokenCounter } from "../memory/context-manager.js";
@@ -187,15 +188,24 @@ export async function runAgentLoop(
         unifiedInference,
       );
 
-      // Goose worker pool: spawns Goose subprocesses for task execution.
-      // Uses Ollama by default (free local inference) — no Conway credits burned.
-      const workerPool = new GooseWorkerPool({
+      // Worker pools: try Pi first (cloud LLMs), then Goose (supports Ollama, free local).
+      // Both are initialised here; spawnAgent() decides priority at task dispatch time.
+      const piWorkerPool = new PiWorkerPool({
         db: db.raw,
         provider: config.workerProvider,
         model: config.workerModel,
-        workerId: `pool-${identity.name}`,
+        workerId: `pi-pool-${identity.name}`,
+      });
+      const gooseWorkerPool = new GooseWorkerPool({
+        db: db.raw,
+        provider: config.workerProvider,
+        model: config.workerModel,
+        workerId: `goose-pool-${identity.name}`,
         maxWorkers: config.maxWorkers,
       });
+      // Combined liveness check: a task is alive if either pool owns the worker.
+      const isLocalWorkerAlive = (address: string) =>
+        piWorkerPool.hasWorker(address) || gooseWorkerPool.hasWorker(address);
 
       orchestrator = new Orchestrator({
         db: db.raw,
@@ -206,7 +216,7 @@ export async function runAgentLoop(
         identity,
         isWorkerAlive: (address: string) => {
           if (address.startsWith("local://")) {
-            return workerPool.hasWorker(address);
+            return isLocalWorkerAlive(address);
           }
           // Remote workers: check children table
           const child = db.raw.prepare(
@@ -218,12 +228,24 @@ export async function runAgentLoop(
         config: {
           ...config,
           spawnAgent: async (task: any) => {
-            // Prefer Goose local workers when available — they're free and don't
-            // burn Conway credits. Only fall back to Conway sandbox spawning when
-            // Goose is explicitly disabled via config.
-            if (config.disableGooseWorkers !== true) {
+            // Priority: Pi (cloud LLMs) → Goose (Ollama, free) → Conway sandbox.
+            // Local workers are preferred — they burn no Conway credits.
+            if (config.forceConwaySandbox !== true) {
+              // 1. Try Pi (better tool support, richer output format, cloud LLMs)
               try {
-                const spawned = workerPool.spawn(task);
+                const spawned = piWorkerPool.spawn(task);
+                logger.info("Spawned Pi worker", { taskId: task.id, address: spawned.address });
+                return spawned;
+              } catch (piError) {
+                logger.info("Pi spawn skipped, trying Goose", {
+                  taskId: task.id,
+                  reason: piError instanceof Error ? piError.message : String(piError),
+                });
+              }
+
+              // 2. Try Goose (supports Ollama — works without cloud API keys)
+              try {
+                const spawned = gooseWorkerPool.spawn(task);
                 logger.info("Spawned Goose worker", { taskId: task.id, address: spawned.address });
                 return spawned;
               } catch (gooseError) {
