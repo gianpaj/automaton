@@ -132,6 +132,8 @@ export async function runAgentLoop(
   let orchestrator: Orchestrator | undefined;
   let contextManager: ContextManager | undefined;
   let compressionEngine: CompressionEngine | undefined;
+  let piWorkerPool: PiWorkerPool | undefined;
+  let gooseWorkerPool: GooseWorkerPool | undefined;
 
   if (hasTable(db.raw, "goals")) {
     try {
@@ -204,13 +206,13 @@ export async function runAgentLoop(
 
       // Worker pools: try Pi first (cloud LLMs), then Goose (supports Ollama, free local).
       // Both are initialised here; spawnAgent() decides priority at task dispatch time.
-      const piWorkerPool = new PiWorkerPool({
+      piWorkerPool = new PiWorkerPool({
         db: db.raw,
         provider: config.workerProvider,
         model: resolvedWorkerModel,
         workerId: `pi-pool-${identity.name}`,
       });
-      const gooseWorkerPool = new GooseWorkerPool({
+      gooseWorkerPool = new GooseWorkerPool({
         db: db.raw,
         provider: config.workerProvider,
         model: resolvedWorkerModel,
@@ -219,7 +221,7 @@ export async function runAgentLoop(
       });
       // Combined liveness check: a task is alive if either pool owns the worker.
       const isLocalWorkerAlive = (address: string) =>
-        piWorkerPool.hasWorker(address) || gooseWorkerPool.hasWorker(address);
+        piWorkerPool!.hasWorker(address) || gooseWorkerPool!.hasWorker(address);
 
       orchestrator = new Orchestrator({
         db: db.raw,
@@ -247,7 +249,7 @@ export async function runAgentLoop(
             if (config.forceConwaySandbox !== true) {
               // 1. Try Pi (better tool support, richer output format, cloud LLMs)
               try {
-                const spawned = piWorkerPool.spawn(task);
+                const spawned = piWorkerPool!.spawn(task);
                 logger.info("Spawned Pi worker", { taskId: task.id, address: spawned.address });
                 return spawned;
               } catch (piError) {
@@ -259,7 +261,7 @@ export async function runAgentLoop(
 
               // 2. Try Goose (supports Ollama — works without cloud API keys)
               try {
-                const spawned = gooseWorkerPool.spawn(task);
+                const spawned = gooseWorkerPool!.spawn(task);
                 logger.info("Spawned Goose worker", { taskId: task.id, address: spawned.address });
                 return spawned;
               } catch (gooseError) {
@@ -603,8 +605,13 @@ export async function runAgentLoop(
         // entirely — there is nothing for the parent agent to decide right now.
         // This avoids burning credits on turns that always end in create_goal BLOCKED.
         if (orchestratorTick.phase === "executing" && orchestratorTick.goalsActive > 0) {
-          log(config, `[LOOP] Orchestrator executing (${orchestratorTick.goalsActive} active goal(s)) — skipping LLM turn, sleeping 60s.`);
-          db.setKV("sleep_until", new Date(Date.now() + 60_000).toISOString());
+          // Adaptive sleep: poll faster when local workers are active so we
+          // pick up the next task quickly after one completes. Wake events
+          // also fire on completion, but 10s polling is a cheap safety net.
+          const activeLocalWorkers = (gooseWorkerPool?.getActiveCount() ?? 0) + (piWorkerPool?.getActiveCount() ?? 0);
+          const sleepMs = activeLocalWorkers > 0 ? 10_000 : 60_000;
+          log(config, `[LOOP] Orchestrator executing (${orchestratorTick.goalsActive} active goal(s), ${activeLocalWorkers} local workers) — skipping LLM turn, sleeping ${sleepMs / 1000}s.`);
+          db.setKV("sleep_until", new Date(Date.now() + sleepMs).toISOString());
           db.setAgentState("sleeping");
           onStateChange?.("sleeping");
           running = false;
